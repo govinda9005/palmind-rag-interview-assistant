@@ -26,16 +26,16 @@ logger = logging.getLogger("palmind.vector")
 class ScoredChunk(BaseModel):
     """Represents a retrieved document chunk with semantic similarity score and metadata."""
 
-    point_id: str = Field(..., description="Unique Qdrant point UUID")
+    point_id: str = Field(default="", description="Unique Qdrant point UUID")
     score: float = Field(..., description="Cosine similarity score (0.0 to 1.0)")
     document_id: int = Field(..., description="Parent document identifier")
     filename: str = Field(..., description="Original filename of the document")
     chunk_index: int = Field(..., description="Index of this chunk in sequence")
     chunk_text: str = Field(..., description="Text content stored in vector payload")
-    chunking_strategy: str = Field(..., description="Strategy used to produce chunk")
-    character_count: int = Field(..., description="Length of chunk content")
-    start_char: int = Field(..., description="Character offset start in document")
-    end_char: int = Field(..., description="Character offset end in document")
+    chunking_strategy: str = Field(default="recursive", description="Strategy used to produce chunk")
+    character_count: int = Field(default=0, description="Length of chunk content")
+    start_char: Optional[int] = Field(default=0, description="Character offset start in document")
+    end_char: Optional[int] = Field(default=0, description="Character offset end in document")
 
 
 class VectorService:

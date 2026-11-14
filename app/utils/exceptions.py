@@ -95,6 +95,6 @@ class MemoryException(AppException):
 class RAGException(AppException):
     """Raised when conversational RAG generation fails."""
 
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
-        super().__init__(message=message, status_code=500, details=details)
+    def __init__(self, message: str, status_code: int = 500, details: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message=message, status_code=status_code, details=details)
 

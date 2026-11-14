@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.database.init_db import init_db
 from app.api.routes.documents import router as documents_router
+from app.api.routes.chat import router as chat_router
 from app.utils.exceptions import AppException
 
 # Setup structured logger
@@ -53,6 +54,7 @@ app.add_middleware(
 
 # Register API Routers
 app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
+app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 
 
 # Global Exception Handlers

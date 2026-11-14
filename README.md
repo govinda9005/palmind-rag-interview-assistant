@@ -179,6 +179,55 @@ curl -X DELETE "http://localhost:8000/api/v1/documents/1"
 
 ---
 
+## 💬 Conversational RAG API
+
+### Ask a Question Grounded in Documents (`POST /api/v1/chat`)
+
+Queries the indexed documents using custom semantic retrieval and Google Gemini generation (strictly no `RetrievalQAChain`).
+
+**Example `curl` Request:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "session_user_001",
+    "message": "What backend technologies does PalmMind AI use?"
+  }'
+```
+
+**Example Successful Grounded Response (`200 OK`):**
+```json
+{
+  "session_id": "session_user_001",
+  "response": "Based on the provided documentation, PalmMind AI uses Python 3.11+, FastAPI, Qdrant vector database, SQLite, and Google Gemini API for their backend architecture.",
+  "sources_used": [
+    {
+      "document_id": 1,
+      "filename": "palmind_internship_guide.txt",
+      "chunk_index": 0,
+      "score": 0.7532,
+      "text_snippet": "The backend engineering stack at PalmMind AI comprises Python 3.11+, FastAPI, Qdrant vector database for semantic search, SQLite for relational persistence..."
+    }
+  ],
+  "intent": "document_rag",
+  "action_info": null
+}
+```
+
+**Insufficient Context Response (`200 OK`):**
+When an inquiry does not relate to any indexed document, the system refuses to hallucinate:
+```json
+{
+  "session_id": "session_user_001",
+  "response": "Based on the indexed documents, I could not find information regarding your inquiry. Please verify that the relevant document has been uploaded or rephrase your question.",
+  "sources_used": [],
+  "intent": "document_rag",
+  "action_info": null
+}
+```
+
+---
+
 ## 🧪 Running Automated Tests
 
 Run the complete test suite:
@@ -198,7 +247,7 @@ pytest -v
 - [x] **Phase 2: Text Extraction and Two Chunking Strategies** (PDF & TXT parsers, Fixed-size chunking, Recursive character chunking)
 - [x] **Phase 3: Embedding Generation and Qdrant Integration** (Local `all-MiniLM-L6-v2`, collection setup, indexing, similarity search)
 - [x] **Phase 4: SQL Database and Document Ingestion API** (SQLAlchemy models, metadata persistence, `POST /api/v1/documents/upload`)
-- [ ] **Phase 5: Custom Conversational RAG with Gemini** (Prompt assembly, semantic retrieval, context grounding without LangChain chains)
+- [x] **Phase 5: Custom Conversational RAG with Gemini** (Prompt assembly, semantic retrieval, context grounding without LangChain chains)
 - [ ] **Phase 6: Redis-Based Multi-Turn Memory** (Session isolation, chronological message history, follow-up query context)
 - [ ] **Phase 7: LLM-Based Interview Booking** (Intent recognition, structured validation for name/email/date/time, SQLite persistence)
 - [ ] **Phase 8: Comprehensive Testing, Refactoring, Documentation, and GitHub Submission**
