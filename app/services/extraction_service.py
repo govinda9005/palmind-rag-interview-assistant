@@ -201,3 +201,8 @@ class ExtractionService:
 
 # Singleton instance for convenience
 extraction_service = ExtractionService()
+
+
+def get_extraction_service() -> ExtractionService:
+    """FastAPI dependency provider for ExtractionService."""
+    return extraction_service

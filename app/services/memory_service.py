@@ -216,6 +216,51 @@ class MemoryService:
             logger.error("Failed to check TTL for session %s: %s", session_id, exc)
             return -2
 
+    def _booking_draft_key(self, session_id: str) -> str:
+        """Return namespaced Redis key for session booking draft."""
+        clean_id = session_id.strip()
+        return f"palmind:session:{clean_id}:booking_draft"
+
+    def get_booking_draft(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve in-progress booking draft from Redis."""
+        if not session_id or not session_id.strip():
+            return None
+        key = self._booking_draft_key(session_id)
+        try:
+            val = self._client.get(key)
+            if not val:
+                return None
+            return json.loads(val)
+        except Exception as exc:
+            logger.error("Failed to read booking draft for %s: %s", session_id, exc)
+            return None
+
+    def save_booking_draft(self, session_id: str, draft: Dict[str, Any]) -> None:
+        """Persist incomplete booking draft in Redis with session TTL."""
+        if not session_id or not session_id.strip():
+            return
+        key = self._booking_draft_key(session_id)
+        try:
+            serialized = json.dumps(draft)
+            self._client.set(key, serialized, ex=self._ttl_seconds)
+        except Exception as exc:
+            logger.error("Failed to save booking draft for %s: %s", session_id, exc)
+            raise MemoryException(
+                message=f"Failed to persist booking draft in Redis: {str(exc)}",
+                details={"session_id": session_id, "error": str(exc)},
+            ) from exc
+
+    def clear_booking_draft(self, session_id: str) -> bool:
+        """Purge incomplete booking draft from Redis."""
+        if not session_id or not session_id.strip():
+            return False
+        key = self._booking_draft_key(session_id)
+        try:
+            return bool(self._client.delete(key))
+        except Exception as exc:
+            logger.error("Failed to delete booking draft for %s: %s", session_id, exc)
+            return False
+
 
 # Singleton instance for application reuse
 memory_service = MemoryService()

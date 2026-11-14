@@ -1,32 +1,57 @@
-"""API route definitions for conversational RAG."""
+"""API route definitions for conversational RAG and interview booking."""
 
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
 
 from app.api.schemas.chat import ChatRequest, ChatResponse
+from app.database.connection import get_db
+from app.services.booking_service import BookingService, get_booking_service
 from app.services.memory_service import MemoryService, get_memory_service
 from app.services.rag_service import RAGService, get_rag_service
 
-router = APIRouter(prefix="/chat", tags=["Conversational RAG"])
+router = APIRouter(prefix="/chat", tags=["Conversational RAG & Booking"])
 
 
 @router.post(
     "",
     response_model=ChatResponse,
     status_code=status.HTTP_200_OK,
-    summary="Chat with documents using custom RAG",
+    summary="Chat with documents or book an interview",
     description=(
-        "Ask a question grounded in the indexed documents. The system computes query embeddings, "
-        "retrieves top relevant chunks from Qdrant, builds a grounded prompt with Redis multi-turn "
-        "memory, and calls Google Gemini to generate an accurate answer with source metadata citations."
+        "Ask a question grounded in indexed documents using custom RAG, or "
+        "schedule an interview through multi-turn conversational booking."
     ),
 )
 def chat_endpoint(
     request: ChatRequest,
-    service: RAGService = Depends(get_rag_service),
+    rag_service: RAGService = Depends(get_rag_service),
+    booking_service: BookingService = Depends(get_booking_service),
+    db: Session = Depends(get_db),
 ) -> ChatResponse:
-    """Conversational RAG endpoint returning grounded answers and source citations."""
-    return service.answer_question(
+    """Conversational endpoint routing between interview booking and custom document RAG."""
+    # 1. If an active booking flow is already in progress for this session, continue booking
+    if booking_service.is_booking_active(session_id=request.session_id):
+        return booking_service.process_message(
+            session_id=request.session_id,
+            message=request.message,
+            db=db,
+        )
+
+    # 2. Check if the incoming utterance initiates an interview booking
+    extraction = booking_service.detect_intent_and_extract(
+        message=request.message,
+        session_id=request.session_id,
+    )
+    if extraction.intent == "interview_booking":
+        return booking_service.process_message(
+            session_id=request.session_id,
+            message=request.message,
+            db=db,
+        )
+
+    # 3. Otherwise, execute custom document RAG with Redis multi-turn memory
+    return rag_service.answer_question(
         query=request.message,
         session_id=request.session_id,
     )
@@ -56,5 +81,5 @@ def clear_session_history(
 ) -> Dict[str, Any]:
     """Delete conversation history for a session."""
     deleted = memory.clear_session(session_id=session_id)
+    memory.clear_booking_draft(session_id=session_id)
     return {"session_id": session_id, "cleared": deleted}
-

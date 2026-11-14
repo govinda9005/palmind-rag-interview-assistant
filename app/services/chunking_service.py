@@ -379,3 +379,8 @@ class ChunkingService:
 # Singleton instance for convenience
 chunking_service = ChunkingService()
 
+
+def get_chunking_service() -> ChunkingService:
+    """FastAPI dependency provider for ChunkingService."""
+    return chunking_service
+
