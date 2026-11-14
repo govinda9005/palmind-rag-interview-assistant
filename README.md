@@ -142,7 +142,7 @@ pytest -v
 ## 🗺️ Project Implementation Roadmap
 
 - [x] **Phase 1: Project Setup and Architecture** (Directory structure, dependencies, configuration, Docker Compose, health endpoint)
-- [ ] **Phase 2: Text Extraction and Two Chunking Strategies** (PDF & TXT parsers, Fixed-size chunking, Recursive character chunking)
+- [x] **Phase 2: Text Extraction and Two Chunking Strategies** (PDF & TXT parsers, Fixed-size chunking, Recursive character chunking)
 - [ ] **Phase 3: Embedding Generation and Qdrant Integration** (Local `all-MiniLM-L6-v2`, collection setup, indexing, similarity search)
 - [ ] **Phase 4: SQL Database and Document Ingestion API** (SQLAlchemy models, metadata persistence, `POST /api/v1/documents/upload`)
 - [ ] **Phase 5: Custom Conversational RAG with Gemini** (Prompt assembly, semantic retrieval, context grounding without LangChain chains)
