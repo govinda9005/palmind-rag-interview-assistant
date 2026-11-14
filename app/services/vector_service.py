@@ -359,3 +359,9 @@ class VectorService:
 
 # Singleton instance for application reuse
 vector_service = VectorService()
+
+
+def get_vector_service() -> VectorService:
+    """Return the singleton instance of VectorService."""
+    return vector_service
+

@@ -155,3 +155,9 @@ class EmbeddingService:
 # Singleton instance for application reuse
 embedding_service = EmbeddingService()
 
+
+def get_embedding_service() -> EmbeddingService:
+    """Return the singleton instance of EmbeddingService."""
+    return embedding_service
+
+

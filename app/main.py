@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.database.init_db import init_db
+from app.api.routes.documents import router as documents_router
 from app.utils.exceptions import AppException
 
 # Setup structured logger
@@ -21,6 +23,8 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan context manager for startup and shutdown events."""
     logger.info("Application starting up: %s (v%s)", settings.PROJECT_NAME, settings.VERSION)
+    # Initialize database tables on startup
+    init_db()
     yield
     logger.info("Application shutting down: %s", settings.PROJECT_NAME)
 
@@ -46,6 +50,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register API Routers
+app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
 
 
 # Global Exception Handlers

@@ -126,6 +126,59 @@ The application exposes:
 
 ---
 
+## 📡 Document Ingestion API
+
+### 1. Ingest a Document (`POST /api/v1/documents/upload`)
+Uploads a PDF or TXT file, parses text, splits into chunks, computes 384-d embeddings, and indexes in SQLite + Qdrant.
+
+**Example `curl` (Recursive Strategy):**
+```bash
+curl -X POST "http://localhost:8000/api/v1/documents/upload" \
+  -F "file=@sample.pdf;type=application/pdf" \
+  -F "chunking_strategy=recursive"
+```
+
+**Example `curl` (Fixed Strategy with custom size/overlap):**
+```bash
+curl -X POST "http://localhost:8000/api/v1/documents/upload" \
+  -F "file=@notes.txt;type=text/plain" \
+  -F "chunking_strategy=fixed" \
+  -F "chunk_size=300" \
+  -F "chunk_overlap=30"
+```
+
+**Successful Response (`201 Created`):**
+```json
+{
+  "success": true,
+  "document_id": 1,
+  "filename": "sample.pdf",
+  "extracted_character_count": 1420,
+  "number_of_chunks": 3,
+  "selected_chunking_strategy": "recursive",
+  "number_of_embeddings_stored": 3,
+  "message": "Document uploaded, chunked, embedded, and indexed successfully."
+}
+```
+
+### 2. List Ingested Documents (`GET /api/v1/documents/`)
+```bash
+curl -X GET "http://localhost:8000/api/v1/documents/"
+```
+
+### 3. Get Document Details & Chunks (`GET /api/v1/documents/{document_id}`)
+```bash
+curl -X GET "http://localhost:8000/api/v1/documents/1"
+```
+
+### 4. Delete Document (`DELETE /api/v1/documents/{document_id}`)
+Deletes document and chunk records from SQLite and purges associated vector points from Qdrant.
+```bash
+curl -X DELETE "http://localhost:8000/api/v1/documents/1"
+```
+
+---
+
 ## 🧪 Running Automated Tests
 
 Run the complete test suite:
@@ -143,8 +196,8 @@ pytest -v
 
 - [x] **Phase 1: Project Setup and Architecture** (Directory structure, dependencies, configuration, Docker Compose, health endpoint)
 - [x] **Phase 2: Text Extraction and Two Chunking Strategies** (PDF & TXT parsers, Fixed-size chunking, Recursive character chunking)
-- [ ] **Phase 3: Embedding Generation and Qdrant Integration** (Local `all-MiniLM-L6-v2`, collection setup, indexing, similarity search)
-- [ ] **Phase 4: SQL Database and Document Ingestion API** (SQLAlchemy models, metadata persistence, `POST /api/v1/documents/upload`)
+- [x] **Phase 3: Embedding Generation and Qdrant Integration** (Local `all-MiniLM-L6-v2`, collection setup, indexing, similarity search)
+- [x] **Phase 4: SQL Database and Document Ingestion API** (SQLAlchemy models, metadata persistence, `POST /api/v1/documents/upload`)
 - [ ] **Phase 5: Custom Conversational RAG with Gemini** (Prompt assembly, semantic retrieval, context grounding without LangChain chains)
 - [ ] **Phase 6: Redis-Based Multi-Turn Memory** (Session isolation, chronological message history, follow-up query context)
 - [ ] **Phase 7: LLM-Based Interview Booking** (Intent recognition, structured validation for name/email/date/time, SQLite persistence)
