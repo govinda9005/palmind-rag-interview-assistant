@@ -9,6 +9,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import setup_logging
 from app.services.embedding_service import EmbeddingService, get_embedding_service
 from app.services.vector_service import ScoredChunk, VectorService, get_vector_service
+from app.services.memory_service import MemoryService, get_memory_service
 from app.utils.exceptions import RAGException
 
 logger = setup_logging()
@@ -34,12 +35,14 @@ class RAGService:
         self,
         embedding_service: Optional[EmbeddingService] = None,
         vector_service: Optional[VectorService] = None,
+        memory_service: Optional[MemoryService] = None,
         gemini_client: Optional[Any] = None,
         settings: Optional[Settings] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.embedding_service = embedding_service or get_embedding_service()
         self.vector_service = vector_service or get_vector_service()
+        self.memory_service = memory_service or get_memory_service()
         self._gemini_client = gemini_client
 
     def _get_gemini_client(self) -> Any:
@@ -236,6 +239,13 @@ class RAGService:
         4. Query Gemini with the custom prompt.
         5. Return structured ChatResponse containing the generated answer and source citations.
         """
+        # Retrieve prior session conversation history from Redis
+        history = (
+            conversation_history
+            if conversation_history is not None
+            else self.memory_service.get_history(session_id=session_id)
+        )
+
         # Step 1: Semantic retrieval
         chunks = self.retrieve_context(
             query=query,
@@ -244,15 +254,39 @@ class RAGService:
             document_id=document_id,
         )
 
+        # Contextual retrieval fallback for follow-up questions
+        if (not chunks or (chunks and chunks[0].score < 0.40)) and history:
+            past_user_queries = [turn["content"] for turn in history if turn.get("role") == "user"]
+            if past_user_queries:
+                last_user_query = past_user_queries[-1]
+                contextualized_query = f"{last_user_query} {query}"
+                supplemental_chunks = self.retrieve_context(
+                    query=contextualized_query,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    document_id=document_id,
+                )
+                seen_points = {c.point_id for c in chunks}
+                for sc in supplemental_chunks:
+                    if sc.point_id not in seen_points:
+                        chunks.append(sc)
+                        seen_points.add(sc.point_id)
+
         # Step 2: Handle case where no relevant context exists
-        if not chunks:
+        if not chunks and not history:
             logger.info("No relevant chunks found for query '%s' in session '%s'", query[:40], session_id)
+            insufficient_msg = (
+                "Based on the indexed documents, I could not find information regarding your inquiry. "
+                "Please verify that the relevant document has been uploaded or rephrase your question."
+            )
+            self.memory_service.add_turn(
+                session_id=session_id,
+                user_message=query,
+                assistant_message=insufficient_msg,
+            )
             return ChatResponse(
                 session_id=session_id,
-                response=(
-                    "Based on the indexed documents, I could not find information regarding your inquiry. "
-                    "Please verify that the relevant document has been uploaded or rephrase your question."
-                ),
+                response=insufficient_msg,
                 sources_used=[],
                 intent="document_rag",
             )
@@ -271,17 +305,24 @@ class RAGService:
             for c in chunks
         ]
 
-        # Step 3: Construct prompt manually
+        # Step 3: Construct prompt manually with conversation history
         prompt = self.build_prompt(
             query=query,
             chunks=chunks,
-            conversation_history=conversation_history,
+            conversation_history=history,
         )
 
         # Step 4: Generate response via Gemini
         generated_answer = self.generate_response(prompt=prompt)
 
-        # Step 5: Return structured response
+        # Step 5: Save interaction turn to Redis session memory
+        self.memory_service.add_turn(
+            session_id=session_id,
+            user_message=query,
+            assistant_message=generated_answer,
+        )
+
+        # Step 6: Return structured response
         return ChatResponse(
             session_id=session_id,
             response=generated_answer,

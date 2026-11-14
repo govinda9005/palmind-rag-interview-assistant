@@ -1,15 +1,139 @@
-"""Unit and integration tests for custom Conversational RAG service and chat endpoint."""
+"""Unit and integration tests for custom Conversational RAG service, Redis memory, and chat endpoint."""
 
+import time
 from unittest.mock import MagicMock
+import fakeredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.routes.chat import get_rag_service
+from app.api.routes.chat import get_memory_service, get_rag_service
 from app.api.schemas.chat import ChatResponse
+from app.core.config import Settings
 from app.main import app
+from app.services.memory_service import MemoryService
 from app.services.rag_service import RAGService, SYSTEM_INSTRUCTION
 from app.services.vector_service import ScoredChunk
 from app.utils.exceptions import RAGException
+
+
+# ==============================================================================
+# Unit Tests for MemoryService (Redis Session-Isolated Memory)
+# ==============================================================================
+
+class TestMemoryServiceUnit:
+    """Unit tests for Redis-based multi-turn conversation memory."""
+
+    @pytest.fixture
+    def fake_memory_service(self) -> MemoryService:
+        """Provide an isolated MemoryService backed by FakeRedis."""
+        client = fakeredis.FakeRedis(decode_responses=True)
+        settings = Settings(
+            REDIS_HISTORY_LIMIT=3,
+            REDIS_SESSION_TTL_SECONDS=3600,
+        )
+        return MemoryService(client=client, settings=settings)
+
+    def test_new_session_empty_history(self, fake_memory_service: MemoryService):
+        """Verify that a new session starts with no history."""
+        history = fake_memory_service.get_history("brand_new_session")
+        assert history == []
+        assert isinstance(history, list)
+
+    def test_chronological_ordering_and_add_turn(self, fake_memory_service: MemoryService):
+        """Verify messages are stored and retrieved in strict chronological order."""
+        session_id = "test_chrono_sess"
+        fake_memory_service.add_turn(
+            session_id=session_id,
+            user_message="Hello",
+            assistant_message="Hi there! How can I help you?",
+        )
+        fake_memory_service.add_turn(
+            session_id=session_id,
+            user_message="Tell me about PalmMind AI.",
+            assistant_message="PalmMind AI is an AI engineering enterprise.",
+        )
+
+        history = fake_memory_service.get_history(session_id)
+        assert len(history) == 4
+        assert history[0]["role"] == "user"
+        assert history[0]["content"] == "Hello"
+        assert history[1]["role"] == "assistant"
+        assert history[1]["content"] == "Hi there! How can I help you?"
+        assert history[2]["role"] == "user"
+        assert history[2]["content"] == "Tell me about PalmMind AI."
+        assert history[3]["role"] == "assistant"
+        assert history[3]["content"] == "PalmMind AI is an AI engineering enterprise."
+
+    def test_session_isolation_different_users(self, fake_memory_service: MemoryService):
+        """Ensure different session IDs never share or leak conversation history."""
+        session_alice = "session_user_alice"
+        session_bob = "session_user_bob"
+
+        fake_memory_service.add_turn(
+            session_id=session_alice,
+            user_message="My name is Alice.",
+            assistant_message="Nice to meet you, Alice.",
+        )
+        fake_memory_service.add_turn(
+            session_id=session_bob,
+            user_message="My name is Bob.",
+            assistant_message="Hello Bob.",
+        )
+
+        alice_history = fake_memory_service.get_history(session_alice)
+        bob_history = fake_memory_service.get_history(session_bob)
+
+        assert len(alice_history) == 2
+        assert len(bob_history) == 2
+        assert "Alice" in alice_history[0]["content"]
+        assert "Bob" not in str(alice_history)
+        assert "Bob" in bob_history[0]["content"]
+        assert "Alice" not in str(bob_history)
+
+    def test_duplicate_message_prevention(self, fake_memory_service: MemoryService):
+        """Verify duplicate successive submissions are not stored redundantly."""
+        session_id = "test_dup_sess"
+        fake_memory_service.add_message(session_id, role="user", content="Same question")
+        fake_memory_service.add_message(session_id, role="user", content="Same question")
+
+        history = fake_memory_service.get_history(session_id)
+        assert len(history) == 1
+        assert history[0]["content"] == "Same question"
+
+    def test_history_limit_truncation(self, fake_memory_service: MemoryService):
+        """Verify history prunes older turns when exceeding configured REDIS_HISTORY_LIMIT."""
+        session_id = "test_limit_sess"
+        # Configured REDIS_HISTORY_LIMIT is 3 turns = 6 messages max
+        for i in range(1, 6):  # 5 turns = 10 messages
+            fake_memory_service.add_turn(
+                session_id=session_id,
+                user_message=f"Question {i}",
+                assistant_message=f"Answer {i}",
+            )
+
+        history = fake_memory_service.get_history(session_id)
+        assert len(history) == 6  # 3 most recent turns = 6 messages
+        assert history[0]["content"] == "Question 3"
+        assert history[-1]["content"] == "Answer 5"
+
+    def test_session_expiration_ttl(self, fake_memory_service: MemoryService):
+        """Verify TTL expiration is set on the Redis key."""
+        session_id = "test_ttl_sess"
+        fake_memory_service.add_message(session_id, role="user", content="Test TTL")
+
+        ttl = fake_memory_service.get_session_ttl(session_id)
+        assert ttl > 0
+        assert ttl <= 3600
+
+    def test_clear_session(self, fake_memory_service: MemoryService):
+        """Verify clear_session purges all session keys."""
+        session_id = "to_clear"
+        fake_memory_service.add_turn(session_id, "hello", "hi")
+        assert len(fake_memory_service.get_history(session_id)) == 2
+
+        deleted = fake_memory_service.clear_session(session_id)
+        assert deleted is True
+        assert fake_memory_service.get_history(session_id) == []
 
 
 # ==============================================================================
@@ -41,7 +165,6 @@ class TestRAGServiceUnit:
         query = "What are the working hours at PalmMind AI?"
         prompt = service.build_prompt(query=query, chunks=chunks)
 
-        # Assert grounding instructions
         assert "Retrieved Document Context:" in prompt
         assert "company_policy.pdf" in prompt
         assert "Chunk: 0" in prompt
@@ -52,6 +175,33 @@ class TestRAGServiceUnit:
         assert "User Question: What are the working hours at PalmMind AI?" in prompt
         assert "Answer the question using ONLY the facts" in prompt
         assert "Answer:" in prompt
+
+    def test_build_prompt_with_conversation_history(self):
+        """Verify build_prompt integrates past conversation history."""
+        service = RAGService()
+        chunks = [
+            ScoredChunk(
+                document_id=1,
+                filename="leave_policy.txt",
+                chunk_index=0,
+                chunk_text="Employees receive 20 days of annual leave.",
+                score=0.92,
+            )
+        ]
+        history = [
+            {"role": "user", "content": "What is the company leave policy?"},
+            {"role": "assistant", "content": "According to the uploaded document, employees receive 20 days of annual leave."},
+        ]
+        prompt = service.build_prompt(
+            query="How many days is that per year?",
+            chunks=chunks,
+            conversation_history=history,
+        )
+
+        assert "Previous Conversation History:" in prompt
+        assert "User: What is the company leave policy?" in prompt
+        assert "Assistant: According to the uploaded document" in prompt
+        assert "User Question: How many days is that per year?" in prompt
 
     def test_build_prompt_empty_chunks(self):
         """Verify build_prompt handles empty chunks gracefully."""
@@ -144,6 +294,122 @@ class TestRAGServiceUnit:
             service.generate_response(prompt="Hello")
         assert exc_info.value.status_code == 500
         assert "Google Gemini API key is not configured" in exc_info.value.message
+
+
+# ==============================================================================
+# Multi-Turn Conversational RAG Integration Tests
+# ==============================================================================
+
+class TestMultiTurnConversationalRAG:
+    """Integration test suite verifying multi-turn conversation memory with RAG."""
+
+    @pytest.fixture
+    def test_rag_service(self) -> RAGService:
+        """Create RAGService equipped with FakeRedis and mocked Gemini."""
+        client = fakeredis.FakeRedis(decode_responses=True)
+        memory = MemoryService(client=client)
+
+        mock_embedding = MagicMock()
+        mock_embedding.generate_embedding.return_value = [0.05] * 384
+
+        mock_vector = MagicMock()
+        chunk = ScoredChunk(
+            document_id=1,
+            filename="leave_policy.txt",
+            chunk_index=0,
+            chunk_text="According to the company leave policy, employees receive 20 days of annual leave.",
+            score=0.91,
+        )
+        mock_vector.search_similar.return_value = [chunk]
+
+        mock_gemini = MagicMock()
+
+        # Dynamic mock answering based on prompt content
+        def mock_generate_content(model, contents, config):
+            resp = MagicMock()
+            if "How many days is that per year?" in contents:
+                resp.text = "It is 20 days per year."
+            else:
+                resp.text = "According to the uploaded document, employees receive 20 days of annual leave."
+            return resp
+
+        mock_gemini.models.generate_content.side_effect = mock_generate_content
+
+        return RAGService(
+            embedding_service=mock_embedding,
+            vector_service=mock_vector,
+            memory_service=memory,
+            gemini_client=mock_gemini,
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_turn_leave_policy_conversation_scenario(self, test_rag_service: RAGService):
+        """Test the required assignment scenario:
+        User: What is the company leave policy?
+        Assistant: According to the uploaded document, employees receive 20 days of annual leave.
+        User: How many days is that per year?
+        Assistant: It is 20 days per year.
+        The second question must be interpreted using the previous conversation.
+        """
+        app.dependency_overrides[get_rag_service] = lambda: test_rag_service
+        app.dependency_overrides[get_memory_service] = lambda: test_rag_service.memory_service
+
+        session_id = "sess_leave_test_001"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Turn 1
+            turn_1_payload = {
+                "session_id": session_id,
+                "message": "What is the company leave policy?",
+            }
+            resp_1 = await client.post("/api/v1/chat", json=turn_1_payload)
+            assert resp_1.status_code == 200
+            data_1 = resp_1.json()
+            assert "20 days of annual leave" in data_1["response"]
+            assert len(data_1["sources_used"]) == 1
+            assert data_1["sources_used"][0]["filename"] == "leave_policy.txt"
+
+            # Verify Turn 1 is in Redis
+            history_after_turn_1 = test_rag_service.memory_service.get_history(session_id)
+            assert len(history_after_turn_1) == 2
+            assert history_after_turn_1[0]["role"] == "user"
+            assert history_after_turn_1[0]["content"] == "What is the company leave policy?"
+            assert history_after_turn_1[1]["role"] == "assistant"
+            assert "20 days of annual leave" in history_after_turn_1[1]["content"]
+
+            # Turn 2: Follow-up relying on Turn 1 context
+            turn_2_payload = {
+                "session_id": session_id,
+                "message": "How many days is that per year?",
+            }
+            resp_2 = await client.post("/api/v1/chat", json=turn_2_payload)
+            assert resp_2.status_code == 200
+            data_2 = resp_2.json()
+            assert data_2["response"] == "It is 20 days per year."
+
+            # Verify Redis contains both turns chronologically (4 messages total)
+            history_after_turn_2 = test_rag_service.memory_service.get_history(session_id)
+            assert len(history_after_turn_2) == 4
+            assert history_after_turn_2[2]["role"] == "user"
+            assert history_after_turn_2[2]["content"] == "How many days is that per year?"
+            assert history_after_turn_2[3]["role"] == "assistant"
+            assert history_after_turn_2[3]["content"] == "It is 20 days per year."
+
+            # Test GET /api/v1/chat/history/{session_id}
+            get_hist = await client.get(f"/api/v1/chat/history/{session_id}")
+            assert get_hist.status_code == 200
+            assert len(get_hist.json()) == 4
+
+            # Test DELETE /api/v1/chat/history/{session_id}
+            del_hist = await client.delete(f"/api/v1/chat/history/{session_id}")
+            assert del_hist.status_code == 200
+            assert del_hist.json()["cleared"] is True
+
+            # Verify history is now empty
+            get_hist_after_del = await client.get(f"/api/v1/chat/history/{session_id}")
+            assert get_hist_after_del.json() == []
+
+        app.dependency_overrides.clear()
 
 
 # ==============================================================================
